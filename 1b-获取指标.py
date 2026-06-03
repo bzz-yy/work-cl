@@ -27,7 +27,7 @@ CSV: time, thscode, diff, dea, macd, period
 
 import os
 
-ACCESS_TOKEN = os.getenv("THS_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN_HERE")
+ACCESS_TOKEN = os.getenv("THS_ACCESS_TOKEN", "aa62779ad95727b88574d08d2617ee8b406aa15a.signs_NzU1Nzg5MjQ0")
 BASE_URL = "https://quantapi.51ifind.com/api/v1"
 
 HEADERS = {
