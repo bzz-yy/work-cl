@@ -367,8 +367,8 @@ def detect_divergence(bis: List[Dict[str, Any]], area_threshold: float = 0.8):
             continue
         pm_area = pm.get("macd_area", 0)
         cm_area = cm.get("macd_area", 0)
-        # 前笔无 MACD 力度则无法做力度比较，跳过避免假信号
-        if pm_area <= 0:
+        # 两段都需有真实 MACD 力度才能比较；任一为 0 则跳过，避免噪音假信号
+        if pm_area <= 0 or cm_area <= 0:
             continue
         area_shrink = cm_area < pm_area * area_threshold
         if cur["dir"] == "up":
