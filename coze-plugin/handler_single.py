@@ -95,44 +95,126 @@ def _ths_hf(thscode: str, indicators: str, interval: int,
     return rows
 
 
-def fetch_kline_with_macd(thscode: str, interval: int, start: str, end: str,
-                          token: str) -> List[Dict[str, Any]]:
-    ohlc = _ths_hf(thscode, "open,high,low,close", interval, start, end, token)
-    dif = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,DIFF")
-    dea = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,DEA")
-    macd = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,MACD")
-
-    def to_map(rows: List[Dict[str, Any]]) -> Dict[str, float]:
-        m: Dict[str, float] = {}
-        for r in rows:
-            t = r.get("time")
-            if not t:
-                continue
-            for k, v in r.items():
-                if k == "time":
-                    continue
-                if v is not None:
-                    m[t] = float(v)
-                    break
-        return m
-
-    dif_m, dea_m, macd_m = to_map(dif), to_map(dea), to_map(macd)
-    result = []
-    for r in ohlc:
+def _rows_to_map(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    """把 [{'time':..., 'macd':...}] 压成 {time: value} 取第一个非空值字段。"""
+    m: Dict[str, float] = {}
+    for r in rows:
         t = r.get("time")
         if not t:
             continue
-        result.append({
+        for k, v in r.items():
+            if k == "time":
+                continue
+            if v is not None:
+                try:
+                    m[t] = float(v)
+                except (TypeError, ValueError):
+                    pass
+                break
+    return m
+
+
+def _ohlc_rows_to_klines(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        t = r.get("time")
+        if not t:
+            continue
+        out.append({
             "time": t,
             "open": float(r.get("open") or 0),
             "high": float(r.get("high") or 0),
             "low": float(r.get("low") or 0),
             "close": float(r.get("close") or 0),
-            "dif": dif_m.get(t, 0.0),
-            "dea": dea_m.get(t, 0.0),
-            "macd": macd_m.get(t, 0.0),
+            "dif": 0.0, "dea": 0.0, "macd": 0.0,
         })
-    return result
+    return out
+
+
+# ----- 本地合并 5min → 15min / 60min -----
+
+# A 股交易时段桶边界（分钟数 = 小时×60 + 分钟）
+_BUCKETS_15 = ([9 * 60 + 30 + 15 * k for k in range(1, 9)] +
+               [13 * 60 + 15 * k for k in range(1, 9)])
+_BUCKETS_60 = [10 * 60 + 30, 11 * 60 + 30, 14 * 60, 15 * 60]
+
+
+def _bucket_end_time(bar_time: str, target_min: int) -> Optional[str]:
+    """给定 5min K 的结束时间，返回它在 target_min 级别下所属桶的结束时间。"""
+    try:
+        dt = datetime.strptime(bar_time[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    minute_of_day = dt.hour * 60 + dt.minute
+    bounds = _BUCKETS_15 if target_min == 15 else (_BUCKETS_60 if target_min == 60 else None)
+    if bounds is None:
+        return None
+    for b in bounds:
+        if minute_of_day <= b:
+            h2, m2 = divmod(b, 60)
+            return dt.replace(hour=h2, minute=m2).strftime("%Y-%m-%d %H:%M")
+    return None
+
+
+def merge_kline(klines_5min: List[Dict[str, Any]], target_min: int) -> List[Dict[str, Any]]:
+    """把 5min K 线按交易时段合并为 target_min 级别。仅聚合 OHLC，MACD 置 0。"""
+    if target_min == 5:
+        return [dict(k) for k in klines_5min]
+    buckets: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for k in klines_5min:
+        bt = _bucket_end_time(k["time"], target_min)
+        if not bt:
+            continue
+        if bt not in buckets:
+            buckets[bt] = {
+                "time": bt, "open": k["open"], "high": k["high"],
+                "low": k["low"], "close": k["close"],
+                "dif": 0.0, "dea": 0.0, "macd": 0.0,
+            }
+            order.append(bt)
+        else:
+            b = buckets[bt]
+            b["high"] = max(b["high"], k["high"])
+            b["low"] = min(b["low"], k["low"])
+            b["close"] = k["close"]
+    return [buckets[t] for t in order]
+
+
+def attach_macd(klines: List[Dict[str, Any]],
+                dif_rows: List[Dict[str, Any]],
+                dea_rows: List[Dict[str, Any]],
+                macd_rows: List[Dict[str, Any]]) -> None:
+    dif_m, dea_m, macd_m = _rows_to_map(dif_rows), _rows_to_map(dea_rows), _rows_to_map(macd_rows)
+    for k in klines:
+        t = k["time"]
+        # 兼容 MACD 接口返回的时间精度差异（带秒/不带秒）
+        k["dif"] = dif_m.get(t, dif_m.get(t[:16], 0.0))
+        k["dea"] = dea_m.get(t, dea_m.get(t[:16], 0.0))
+        k["macd"] = macd_m.get(t, macd_m.get(t[:16], 0.0))
+
+
+def fetch_levels(thscode: str, lookback: int, levels: List[int],
+                 token: str) -> Dict[int, List[Dict[str, Any]]]:
+    """统一拉取：5min OHLC 只拉一次本地合并；每个级别独立拉 DIF/DEA/MACD。
+    共消耗 indicator 字段数 = 4 + 3 * len(levels)。
+    """
+    start, end = time_range(lookback)
+    # 1) 5min OHLC（只拉一次）
+    ohlc5_rows = _ths_hf(thscode, "open,high,low,close", 5, start, end, token)
+    klines_5_base = _ohlc_rows_to_klines(ohlc5_rows)
+
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for lv in levels:
+        # OHLC：5min 直接用，15/60 本地合并
+        klines = [dict(k) for k in klines_5_base] if lv == 5 else merge_kline(klines_5_base, lv)
+        # MACD：每个级别单独拉
+        dif_rows = _ths_hf(thscode, "MACD", lv, start, end, token, calculate="12,26,9,DIFF")
+        dea_rows = _ths_hf(thscode, "MACD", lv, start, end, token, calculate="12,26,9,DEA")
+        macd_rows = _ths_hf(thscode, "MACD", lv, start, end, token, calculate="12,26,9,MACD")
+        attach_macd(klines, dif_rows, dea_rows, macd_rows)
+        out[lv] = klines
+    return out
 
 
 def time_range(lookback_days: int) -> Tuple[str, str]:
@@ -611,20 +693,28 @@ def handler(args: Args[Input]) -> Output:
     lookback = LOOKBACK_DAYS
     levels = LEVELS
 
-    start, end = time_range(lookback)
     if log:
-        log.info(f"fetch {symbol} levels={levels} {start}~{end}")
+        log.info(f"fetch {symbol} levels={levels} lookback={lookback}d")
 
     by_level: Dict[int, Dict[str, Any]] = {}
     fetch_errors: List[str] = []
+    try:
+        all_klines = fetch_levels(symbol, lookback, levels, token=token)
+    except Exception as e:
+        msg = f"fetch failed: {e}"
+        fetch_errors.append(msg)
+        if log:
+            log.error(msg)
+        all_klines = {lv: [] for lv in levels}
+
     for lv in levels:
         try:
-            klines = fetch_kline_with_macd(symbol, lv, start, end, token=token)
+            klines = all_klines.get(lv, [])
             if log:
                 log.info(f"level {lv}: {len(klines)} bars")
             by_level[lv] = analyze_level(klines, bar_minutes=lv, include_unclosed=False)
         except Exception as e:
-            msg = f"level {lv} fetch/analyze failed: {e}"
+            msg = f"level {lv} analyze failed: {e}"
             fetch_errors.append(msg)
             if log:
                 log.error(msg)
