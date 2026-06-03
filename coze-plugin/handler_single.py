@@ -46,6 +46,25 @@ LEVEL_LABEL = {5: "5分钟", 15: "15分钟", 60: "60分钟"}
 # 1. 数据拉取（同花顺 iFinD high_frequency 接口）
 # ============================================================
 
+def normalize_stock_code(code: str) -> str:
+    """补全交易所后缀，支持带后缀和纯数字两种输入。
+    - 已含 "." → 原样返回（大写）
+    - 6 开头 → .SH（上交所）
+    - 83/87/43/92 开头 → .BJ（北交所）
+    - 其余（0/3 开头等）→ .SZ（深交所）
+    """
+    code = (code or "").strip().upper()
+    if "." in code:
+        return code
+    if not code:
+        return code
+    if code.startswith("6"):
+        return f"{code}.SH"
+    if code[:2] in ("83", "87", "43", "92"):
+        return f"{code}.BJ"
+    return f"{code}.SZ"
+
+
 def _post(endpoint: str, payload: Dict[str, Any], token: str,
           timeout: int = 30) -> Dict[str, Any]:
     headers = {"Content-Type": "application/json", "access_token": token}
@@ -699,17 +718,20 @@ def handler(args: Args[Input]) -> Output:
     log = getattr(args, "logger", None)
     inp = args.input
 
-    symbol = (getattr(inp, "symbol", None) or "").strip()
-    if not symbol:
+    raw_symbol = (getattr(inp, "symbol", None) or "").strip()
+    if not raw_symbol:
         return {"success": False, "error": "symbol is required",
                 "data": {}, "facts": [], "narrative_fallback": ""}
+
+    # 自动补全交易所后缀：支持 "600519" 和 "600519.SH" 两种输入
+    symbol = normalize_stock_code(raw_symbol)
 
     token = ACCESS_TOKEN
     lookback = LOOKBACK_DAYS
     levels = LEVELS
 
     if log:
-        log.info(f"fetch {symbol} levels={levels} lookback={lookback}d")
+        log.info(f"fetch {raw_symbol} -> {symbol} levels={levels} lookback={lookback}d")
 
     by_level: Dict[int, Dict[str, Any]] = {}
     fetch_errors: List[str] = []
