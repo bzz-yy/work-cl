@@ -7,9 +7,8 @@ Metadata 配置（在 IDE 元数据面板录入）：
 
 Input：
   symbol         string   必填   股票代码，如 600519.SH
-  access_token   string   选填   THS token，空则用内置默认值
-  lookback_days  integer  选填   回看天数，默认 30
-  levels         string   选填   要分析的周期，逗号分隔，默认 "5,15,60"
+
+（access_token / lookback_days / levels 已固化在脚本顶部常量，不再走入参）
 
 Output：
   success             boolean
@@ -33,7 +32,12 @@ import requests
 # ============================================================
 
 BASE_URL = "https://quantapi.51ifind.com/api/v1"
-DEFAULT_TOKEN = "aa62779ad95727b88574d08d2617ee8b406aa15a.signs_NzU1Nzg5MjQ0"
+
+# === 以下为内置固定参数，需要调整直接改这里 ===
+ACCESS_TOKEN = "aa62779ad95727b88574d08d2617ee8b406aa15a.signs_NzU1Nzg5MjQ0"
+LOOKBACK_DAYS = 30
+LEVELS = [5, 15, 60]
+# ============================================
 
 LEVEL_LABEL = {5: "5分钟", 15: "15分钟", 60: "60分钟"}
 
@@ -588,13 +592,9 @@ def handler(args: Args[Input]) -> Output:
         return {"success": False, "error": "symbol is required",
                 "data": {}, "facts": [], "narrative_fallback": ""}
 
-    token = (getattr(inp, "access_token", None) or "").strip() or DEFAULT_TOKEN
-    lookback = int(getattr(inp, "lookback_days", 0) or 30)
-    levels_str = (getattr(inp, "levels", None) or "5,15,60").strip()
-    try:
-        levels = [int(x.strip()) for x in levels_str.split(",") if x.strip()]
-    except ValueError:
-        levels = [5, 15, 60]
+    token = ACCESS_TOKEN
+    lookback = LOOKBACK_DAYS
+    levels = LEVELS
 
     start, end = time_range(lookback)
     if log:
