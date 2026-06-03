@@ -62,11 +62,17 @@ def _post(endpoint: str, payload: Dict[str, Any], token: str,
 
 def _ths_hf(thscode: str, indicators: str, interval: int,
             start: str, end: str, token: str,
-            macd_option: Optional[str] = None) -> List[Dict[str, Any]]:
-    function_para = {"CPS": "forward1", "Fill": "Previous", "Interval": str(interval)}
-    ind = f"{indicators}=MACD_Option:{macd_option}" if macd_option else indicators
+            calculate: Optional[str] = None) -> List[Dict[str, Any]]:
+    """通用高频接口调用。
+    calculate: 指标分量参数，如 "12,26,9,DIFF" / "12,26,9,DEA" / "12,26,9,MACD"。
+    """
+    function_para: Dict[str, Any] = {
+        "CPS": "forward1", "Fill": "Previous", "Interval": str(interval),
+    }
+    if calculate:
+        function_para["calculate"] = {indicators: calculate}
     payload = {
-        "codes": thscode, "indicators": ind,
+        "codes": thscode, "indicators": indicators,
         "starttime": start, "endtime": end,
         "functionpara": function_para,
     }
@@ -77,7 +83,6 @@ def _ths_hf(thscode: str, indicators: str, interval: int,
     t0 = tables[0]
     times = t0.get("time") or []
     table = t0.get("table") or {}
-    # 兼容 table 为嵌套 dict 或字段直接平铺
     if not table:
         table = {k: v for k, v in t0.items()
                  if isinstance(v, list) and k != "time"}
@@ -93,9 +98,9 @@ def _ths_hf(thscode: str, indicators: str, interval: int,
 def fetch_kline_with_macd(thscode: str, interval: int, start: str, end: str,
                           token: str) -> List[Dict[str, Any]]:
     ohlc = _ths_hf(thscode, "open,high,low,close", interval, start, end, token)
-    dif = _ths_hf(thscode, "MACD", interval, start, end, token)
-    dea = _ths_hf(thscode, "MACD", interval, start, end, token, macd_option="2")
-    macd = _ths_hf(thscode, "MACD", interval, start, end, token, macd_option="3")
+    dif = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,DIFF")
+    dea = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,DEA")
+    macd = _ths_hf(thscode, "MACD", interval, start, end, token, calculate="12,26,9,MACD")
 
     def to_map(rows: List[Dict[str, Any]]) -> Dict[str, float]:
         m: Dict[str, float] = {}
