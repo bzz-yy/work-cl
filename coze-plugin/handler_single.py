@@ -347,7 +347,11 @@ def detect_divergence(bis: List[Dict[str, Any]], area_threshold: float = 0.8):
         if not new_extreme:
             continue
         pm_area = pm.get("macd_area", 0)
-        area_shrink = cm.get("macd_area", 0) < pm_area * area_threshold
+        cm_area = cm.get("macd_area", 0)
+        # 前笔无 MACD 力度则无法做力度比较，跳过避免假信号
+        if pm_area <= 0:
+            continue
+        area_shrink = cm_area < pm_area * area_threshold
         if cur["dir"] == "up":
             dif_ok = cm.get("dif_peak", 0) <= pm.get("dif_peak", 0)
             kind = "top_divergence"
@@ -357,7 +361,7 @@ def detect_divergence(bis: List[Dict[str, Any]], area_threshold: float = 0.8):
         if area_shrink and dif_ok:
             cur["divergence"] = {
                 "kind": kind, "vs_bi_index": i - 2,
-                "area_ratio": cm.get("macd_area", 0) / pm_area if pm_area else 0,
+                "area_ratio": round(cm_area / pm_area, 3),
                 "dea_zone": "above_zero" if cm.get("dea_avg", 0) > 0 else "below_zero",
             }
             events.append({"bi_index": i, **cur["divergence"]})
@@ -469,10 +473,21 @@ def _zs_summary(zs):
     }
 
 
+def _is_session_close_bar(bar_time: str) -> bool:
+    """K 线结束时间是否正好是 A 股交易时段收盘（15:00）。"""
+    try:
+        return bar_time[-5:] == "15:00"
+    except Exception:
+        return False
+
+
 def analyze_level(klines, bar_minutes, include_unclosed=False):
     if not klines:
         return {"error": "no data", "bar_count": 0}
-    if include_unclosed:
+    last = klines[-1] if klines else None
+    # 收盘后跑：最后一根 K 时间为 15:00 → 视为已收 K，全量进入分析
+    last_is_closed = bool(last and _is_session_close_bar(last.get("time", "")))
+    if include_unclosed or last_is_closed:
         closed = klines
         realtime_bar = None
     else:
