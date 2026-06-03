@@ -47,22 +47,28 @@ LEVEL_LABEL = {5: "5分钟", 15: "15分钟", 60: "60分钟"}
 # ============================================================
 
 def _post(endpoint: str, payload: Dict[str, Any], token: str,
-          timeout: int = 15) -> Dict[str, Any]:
+          timeout: int = 30) -> Dict[str, Any]:
     headers = {"Content-Type": "application/json", "access_token": token}
     r = requests.post(f"{BASE_URL}/{endpoint}", headers=headers,
-                      data=json.dumps(payload), timeout=timeout)
+                      json=payload, timeout=timeout)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if data.get("errorcode", -1) != 0:
+        raise RuntimeError(
+            f"THS接口报错 [{data.get('errorcode')}]: {data.get('errmsg', '未知错误')}"
+        )
+    return data
 
 
 def _ths_hf(thscode: str, indicators: str, interval: int,
             start: str, end: str, token: str,
             macd_option: Optional[str] = None) -> List[Dict[str, Any]]:
-    para = f"CPS:forward1,Fill:Previous,Interval:{interval}"
+    function_para = {"CPS": "forward1", "Fill": "Previous", "Interval": str(interval)}
     ind = f"{indicators}=MACD_Option:{macd_option}" if macd_option else indicators
     payload = {
         "codes": thscode, "indicators": ind,
-        "functionpara": para, "starttime": start, "endtime": end,
+        "starttime": start, "endtime": end,
+        "functionpara": function_para,
     }
     data = _post("high_frequency", payload, token)
     tables = data.get("tables") or []
@@ -71,18 +77,22 @@ def _ths_hf(thscode: str, indicators: str, interval: int,
     t0 = tables[0]
     times = t0.get("time") or []
     table = t0.get("table") or {}
+    # 兼容 table 为嵌套 dict 或字段直接平铺
+    if not table:
+        table = {k: v for k, v in t0.items()
+                 if isinstance(v, list) and k != "time"}
     rows: List[Dict[str, Any]] = []
     for i, tm in enumerate(times):
         row: Dict[str, Any] = {"time": tm}
         for k, v in table.items():
-            row[k] = v[i] if i < len(v) else None
+            row[k.lower()] = v[i] if i < len(v) else None
         rows.append(row)
     return rows
 
 
 def fetch_kline_with_macd(thscode: str, interval: int, start: str, end: str,
                           token: str) -> List[Dict[str, Any]]:
-    ohlc = _ths_hf(thscode, "open;high;low;close", interval, start, end, token)
+    ohlc = _ths_hf(thscode, "open,high,low,close", interval, start, end, token)
     dif = _ths_hf(thscode, "MACD", interval, start, end, token)
     dea = _ths_hf(thscode, "MACD", interval, start, end, token, macd_option="2")
     macd = _ths_hf(thscode, "MACD", interval, start, end, token, macd_option="3")
